@@ -1,0 +1,35 @@
+# NeuroScan AI — Python ML requirements
+# PyTorch stack with native Windows CUDA support
+#
+# Install with:
+#   pip install -r requirements.txt
+#
+# PyTorch + CUDA 12.4 (works with CUDA driver 13.1):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+# ── Deep Learning ─────────────────────────────────────────────
+# torch and torchvision installed separately via the CUDA wheel URL above
+timm>=1.0.9              # pretrained EfficientNet / ViT models
+
+# ── Data / Image Processing ───────────────────────────────────
+numpy>=1.26.0
+pandas>=2.2.0
+Pillow>=10.3.0
+opencv-python>=4.9.0
+scikit-learn>=1.5.0
+
+# ── Visualization ─────────────────────────────────────────────
+matplotlib>=3.9.0
+seaborn>=0.13.0
+
+# ── Progress bars ─────────────────────────────────────────────
+tqdm>=4.66.0
+
+# ── Jupyter ───────────────────────────────────────────────────
+jupyter>=1.0.0
+notebook>=7.2.0
+
+# ── API / Model Serving ───────────────────────────────────────
+fastapi>=0.111.0
+uvicorn>=0.30.0
+python-multipart>=0.0.9

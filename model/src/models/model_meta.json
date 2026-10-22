@@ -1,0 +1,22 @@
+{
+  "class_names": [
+    "glioma",
+    "meningioma",
+    "notumor",
+    "pituitary"
+  ],
+  "img_size": 224,
+  "num_classes": 4,
+  "backbone": "efficientnet_b0",
+  "test_accuracy": 0.9306,
+  "mean": [
+    0.485,
+    0.456,
+    0.406
+  ],
+  "std": [
+    0.229,
+    0.224,
+    0.225
+  ]
+}

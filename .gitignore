@@ -1,0 +1,74 @@
+# Dependencies
+node_modules/
+**/node_modules/
+__pycache__/
+**/*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Python virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example
+
+# Datasets (all raw/processed MRI images and archives)
+dataset/
+**/dataset/
+model/dataset/
+model/src/dataset/
+*.zip
+*.tar.gz
+*.tar
+*.rar
+
+# Model checkpoints (ignore intermediate training checkpoints)
+model/src/models/best_phase1.pt
+model/src/models/best_phase2.pt
+model/saved_models/
+
+# Uploads (user-uploaded temporary MRI scans)
+backend/uploads/
+frontend/uploads/
+uploads/
+**/uploads/*
+!**/uploads/.gitkeep
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs & temp files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+
+# Testing
+coverage/
+.nyc_output/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Frontend Vite / build output
+frontend/dist/
+frontend/.vite/
