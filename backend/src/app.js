@@ -14,6 +14,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // ── Routes ───────────────────────────────────────────────────
 app.use('/api/scans', scanRoutes);
+app.use('/api/predict', scanRoutes);
 
 // ── Health check ─────────────────────────────────────────────
 app.get('/api/health', (req, res) => {

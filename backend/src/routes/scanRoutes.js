@@ -14,8 +14,9 @@ const uploadFlexible = (req, res, next) => {
   });
 };
 
-// POST /api/scans/upload  — upload an MRI scan for analysis
+// POST /api/scans/upload or POST /api/predict — upload an MRI scan for analysis
 router.post('/upload', uploadFlexible, scanController.uploadScan);
+router.post('/', uploadFlexible, scanController.uploadScan);
 
 // GET  /api/scans/:id     — get a previous scan result by ID
 router.get('/:id', scanController.getScanById);
