@@ -1,38 +1,15 @@
-"""
-predict.py
-────────────────────────────────────────────────────────────────────────────────
-Single-image inference for the NeuroScan CNN.
-
-Used by the FastAPI backend to serve predictions over HTTP, and can also be
-run directly from the command line for quick testing.
-
-Inference pipeline
-──────────────────
-  1. Load image from disk (or accept a PIL Image).
-  2. Apply the same deterministic val_transform used during training:
-       Resize → ToTensor → Normalise with ImageNet mean/std.
-  3. Run the model in eval mode inside torch.no_grad() (no autograd tape).
-  4. Apply softmax to logits to get class probabilities.
-  5. Return the top-1 class name + confidence, and all class scores.
-
-Why softmax?
-────────────
-The model outputs raw logits (un-normalised scores).  Softmax converts them
-to a probability distribution: values in (0, 1) that sum to 1, making the
-output interpretable as model confidence.
-
-Usage
-─────
-    python predict.py path/to/scan.jpg
-    python predict.py path/to/scan.jpg --top-k 4
-    python predict.py path/to/scan.jpg --json
-
-    # From Python / FastAPI:
-    from predict import Predictor
-    p = Predictor()
-    result = p.predict("scan.jpg")
-    # {'label': 'glioma', 'confidence': 0.983, 'scores': {...}}
-"""
+# ==============================================================================
+# predict.py: Production Inference Engine for Single-Scan MRI Classification
+# ==============================================================================
+# This module provides the 'Predictor' class used by both the command-line
+# interface and the FastAPI microservice to classify individual Brain MRI scans.
+#
+# Key Steps:
+# 1. Singleton Caching: Loads weights once into GPU/CPU RAM for sub-50ms inference.
+# 2. Preprocessing: Resizes to 224x224 and applies ImageNet mean/std normalisation.
+# 3. Feedforward: Evaluates scan through EfficientNet-B0 inside torch.no_grad().
+# 4. Probability Calibration: Converts raw logits into calibrated confidence scores via Softmax.
+# ==============================================================================
 
 import argparse
 import json
@@ -44,7 +21,9 @@ import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
 
-# ── Local imports ─────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
+# STEP 1: IMPORT LOCAL MODULES
+# ------------------------------------------------------------------------------
 SRC_DIR = Path(__file__).parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
@@ -54,28 +33,25 @@ from train import build_model   # noqa: E402
 MODELS_DIR = SRC_DIR / "models"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Predictor class
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# STEP 2: PREDICTOR WRAPPER CLASS
+# ==============================================================================
 
 class Predictor:
     """
-    Wraps the NeuroScan CNN for efficient repeated inference.
+    Wraps the NeuroScan CNN model for fast, repeated inference.
 
-    Loading a model involves reading bytes from disk, allocating GPU memory,
-    and copying the state dict — all expensive.  By encapsulating the model
-    inside a class, we load it once at construction time and reuse it for
-    every call to predict().  This is the standard pattern for model serving.
-
-    Parameters
-    ──────────
-    model_path : .pt file saved by train.py (default: models/neuroscan_final.pt)
-    device     : 'cuda', 'cpu', or torch.device.  Auto-detected if None.
+    Design Pattern:
+    Instantiating this class loads the weights once into memory.
+    Subsequent calls to predict() reuse the loaded model, eliminating file I/O latency.
     """
 
     def __init__(self, model_path=None, device=None, verbose=True):
+        # ----------------------------------------------------------------------
+        # RESOLVE MODEL WEIGHT PATH
+        # ----------------------------------------------------------------------
         if model_path is None:
-            # Default to pickle if available, otherwise .pt
+            # Check for standalone pickle bundle first; fallback to PyTorch .pt bundle
             pkl_file = MODELS_DIR / "neuroscan_model.pkl"
             pt_file  = MODELS_DIR / "neuroscan_final.pt"
             model_path = pkl_file if pkl_file.exists() else pt_file
@@ -90,14 +66,18 @@ class Predictor:
                 "Run train.py or pipeline.py first to produce a saved model."
             )
 
+        # Detect hardware acceleration (CUDA GPU or CPU fallback)
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         elif isinstance(device, str):
             device = torch.device(device)
         self.device = device
 
-        # ── Load model from Pickle (.pkl) or PyTorch (.pt) ────────────────────
+        # ----------------------------------------------------------------------
+        # LOAD MODEL: PICKLE (.pkl) OR PYTORCH (.pt)
+        # ----------------------------------------------------------------------
         if self.model_path.suffix == ".pkl":
+            # Load full serialized model object from Python pickle
             import pickle
             with open(self.model_path, "rb") as f:
                 bundle = pickle.load(f)
@@ -109,10 +89,12 @@ class Predictor:
             std              = bundle.get("std",  [0.229, 0.224, 0.225])
             self.model.eval()
         else:
+            # Load PyTorch checkpoint dictionary
             checkpoint = torch.load(self.model_path, map_location=self.device,
                                     weights_only=True)
 
             if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+                # Full bundle containing state_dict and embedded metadata
                 state_dict       = checkpoint["model_state_dict"]
                 self.class_names = checkpoint["class_names"]
                 num_classes      = checkpoint["num_classes"]
@@ -120,7 +102,7 @@ class Predictor:
                 mean             = checkpoint.get("mean", [0.485, 0.456, 0.406])
                 std              = checkpoint.get("std",  [0.229, 0.224, 0.225])
             else:
-                # Raw state_dict — read metadata from model_meta.json
+                # Raw state_dict — read metadata from companion model_meta.json
                 state_dict = checkpoint
                 meta_path  = MODELS_DIR / "model_meta.json"
                 if not meta_path.exists():
@@ -136,18 +118,19 @@ class Predictor:
                 mean             = meta.get("mean", [0.485, 0.456, 0.406])
                 std              = meta.get("std",  [0.229, 0.224, 0.225])
 
-            # ── Build model and load weights ──────────────────────────────────
+            # Reconstruct architecture and load weights
             self.model = build_model(num_classes, freeze_backbone=False).to(self.device)
             self.model.load_state_dict(state_dict)
             self.model.eval()
 
-        # ── Preprocessing transform ───────────────────────────────────────────
-        # Must exactly match val_transform from preprocessing.py:
-        #   Resize → ToTensor → Normalise
+        # ----------------------------------------------------------------------
+        # DETERMINISTIC PREPROCESSING TRANSFORM
+        # ----------------------------------------------------------------------
+        # Must match val_tf from preprocessing.py: No random crops or rotations!
         self.transform = transforms.Compose([
-            transforms.Resize((img_size, img_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std),
+            transforms.Resize((img_size, img_size)),   # Resize scan to 224x224
+            transforms.ToTensor(),                     # [0, 255] -> [0.0, 1.0] Tensor (C, H, W)
+            transforms.Normalize(mean=mean, std=std),  # Zero-mean unit-variance
         ])
 
         if verbose:
@@ -158,51 +141,57 @@ class Predictor:
 
     def predict(self, image, top_k: int = 1) -> dict:
         """
-        Predict the tumour class for a single MRI image.
+        Classifies an MRI scan and returns probabilities for all 4 tumor types.
 
-        Parameters
-        ──────────
-        image : file path (str / Path) or an already-opened PIL Image
-        top_k : how many top predictions to include in the result
+        Parameters:
+        - image: File path (str/Path) or an open PIL Image object
+        - top_k: Number of highest-confidence predictions to return
 
-        Returns
-        ───────
-        dict with:
-            'label'      str   — top-1 predicted class name
-            'confidence' float — softmax probability for top-1 class (0–1)
-            'scores'     dict  — {class_name: probability} for all classes
-            'top_k'      list  — [{'label': ..., 'confidence': ...}] x top_k
+        Returns:
+        - dict with 'label', 'confidence', 'scores', and 'top_k' list
         """
-        # ── Load image ────────────────────────────────────────────────────────
+        # ----------------------------------------------------------------------
+        # 1. INPUT VALIDATION & RGB CONVERSION
+        # ----------------------------------------------------------------------
         if isinstance(image, (str, Path)):
             image = Image.open(image).convert("RGB")
-        elif not isinstance(image, Image.Image):
+        elif isinstance(image, Image.Image):
+            image = image.convert("RGB")
+        else:
             raise TypeError(f"Expected file path or PIL Image, got {type(image)}")
 
-        # unsqueeze(0): (3, H, W) → (1, 3, H, W) adds the batch dimension
+        # ----------------------------------------------------------------------
+        # 2. TENSOR PREPARATION
+        # ----------------------------------------------------------------------
+        # unsqueeze(0) converts (3, 224, 224) into a batch tensor (1, 3, 224, 224)
         tensor = self.transform(image).unsqueeze(0).to(self.device)
 
-        # ── Inference ─────────────────────────────────────────────────────────
-        # torch.no_grad() prevents PyTorch from recording operations into the
-        # autograd graph — no gradient tape is built, saving memory and time.
+        # ----------------------------------------------------------------------
+        # 3. FEEDFORWARD PASS (EVALUATION MODE)
+        # ----------------------------------------------------------------------
+        # torch.no_grad() bypasses computational graph tracking for maximum speed
         with torch.no_grad():
-            logits = self.model(tensor)                  # (1, num_classes)
-            probs  = F.softmax(logits, dim=1).squeeze()  # (num_classes,)
+            logits = self.model(tensor)                  # Raw logits: shape (1, 4)
+            # Softmax maps raw scores into probabilities in (0, 1) that sum to 1.0
+            probs  = F.softmax(logits, dim=1).squeeze()  # Shape (4,)
 
         probs_np = probs.cpu().numpy()
 
-        # Top-1
+        # ----------------------------------------------------------------------
+        # 4. RESULT PARSING & STRUCTURING
+        # ----------------------------------------------------------------------
+        # Top-1 highest prediction
         top1_idx  = int(probs_np.argmax())
         top1_name = self.class_names[top1_idx]
         top1_conf = float(probs_np[top1_idx])
 
-        # All class scores
+        # Full score dictionary for all 4 classes
         all_scores = {
             name: round(float(p), 6)
             for name, p in zip(self.class_names, probs_np)
         }
 
-        # Top-k sorted by confidence descending
+        # Top-k ranking sorted in descending order of probability
         sorted_idx = probs_np.argsort()[::-1]
         top_k_list = [
             {"label": self.class_names[i], "confidence": round(float(probs_np[i]), 6)}
@@ -217,25 +206,20 @@ class Predictor:
         }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Convenience one-shot function
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# STEP 3: CONVENIENCE ONE-SHOT FUNCTION
+# ==============================================================================
 
 def predict(model_path, image_path) -> dict:
     """
-    One-shot prediction (loads model fresh each call).
-
-    For repeated inference prefer instantiating a Predictor once:
-        p = Predictor()
-        for img in images:
-            print(p.predict(img))
+    Convenience function for one-off CLI calls (loads model fresh).
     """
     return Predictor(model_path=model_path).predict(image_path)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# CLI entry point
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# STEP 4: CLI ENTRY POINT
+# ==============================================================================
 
 def main(args=None):
     parser = argparse.ArgumentParser(description="Single-image inference — NeuroScan CNN")
@@ -251,8 +235,10 @@ def main(args=None):
     result    = predictor.predict(cfg.image, top_k=cfg.top_k)
 
     if cfg.json:
+        # Output clean JSON for programmatic pipelines
         print(json.dumps(result, indent=2))
     else:
+        # Render visual ASCII confidence bars for terminal users
         print(f"\n{'─'*44}")
         print(f"  Image      : {cfg.image}")
         print(f"  Prediction : {result['label']}")
@@ -267,3 +253,4 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
+
